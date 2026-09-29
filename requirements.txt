@@ -1,0 +1,7 @@
+google-genai
+sqlglot
+pandas
+plotly
+streamlit
+python-dotenv
+pytest

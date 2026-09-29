@@ -1,0 +1,25 @@
+[
+  {"id": 21, "difficulty": "hard", "question": "List each track's name along with its album title, genre name, and media type name for tracks in the Rock genre. Order by track name and return the first 10.",
+   "gold_sql": "SELECT t.Name AS TrackName, al.Title AS AlbumTitle, g.Name AS GenreName, m.Name AS MediaTypeName FROM tracks t JOIN albums al ON al.AlbumId = t.AlbumId JOIN genres g ON g.GenreId = t.GenreId JOIN media_types m ON m.MediaTypeId = t.MediaTypeId WHERE g.Name = 'Rock' ORDER BY t.Name LIMIT 10"},
+
+  {"id": 22, "difficulty": "hard", "question": "What is the zip code of the customer who has spent the most money in total?",
+   "gold_sql": "SELECT c.PostalCode FROM customers c JOIN invoices i ON i.CustomerId = c.CustomerId GROUP BY c.CustomerId ORDER BY SUM(i.Total) DESC LIMIT 1"},
+
+  {"id": 23, "difficulty": "hard", "question": "List the phone numbers of employees who directly report to the person with the title 'General Manager'.",
+   "gold_sql": "SELECT e.Phone FROM employees e JOIN employees mgr ON mgr.EmployeeId = e.ReportsTo WHERE mgr.Title = 'General Manager'"},
+
+  {"id": 24, "difficulty": "hard", "question": "For customers with more than one invoice, how many days elapsed between their first and last invoice? Return the customer id and the day difference.",
+   "gold_sql": "SELECT CustomerId, CAST(julianday(MAX(InvoiceDate)) - julianday(MIN(InvoiceDate)) AS INTEGER) AS DaysBetween FROM invoices GROUP BY CustomerId HAVING COUNT(*) > 1"},
+
+  {"id": 25, "difficulty": "hard", "question": "Which invoice month, combined across all years, generated the highest total revenue? Return the two-digit month and the total revenue.",
+   "gold_sql": "SELECT strftime('%m', InvoiceDate) AS Month, SUM(Total) AS Revenue FROM invoices GROUP BY strftime('%m', InvoiceDate) ORDER BY Revenue DESC LIMIT 1"},
+
+  {"id": 26, "difficulty": "hard", "question": "Which artists have an average track price higher than the overall average track price across the entire store? Return the artist name.",
+   "gold_sql": "SELECT ar.Name FROM artists ar JOIN albums al ON al.ArtistId = ar.ArtistId JOIN tracks t ON t.AlbumId = al.AlbumId GROUP BY ar.ArtistId HAVING AVG(t.UnitPrice) > (SELECT AVG(UnitPrice) FROM tracks)"},
+
+  {"id": 27, "difficulty": "hard", "question": "Which playlists contain at least one track by the artist with the most albums? Return the distinct playlist names.",
+   "gold_sql": "SELECT DISTINCT p.Name FROM playlists p JOIN playlist_track pt ON pt.PlaylistId = p.PlaylistId JOIN tracks t ON t.TrackId = pt.TrackId JOIN albums al ON al.AlbumId = t.AlbumId WHERE al.ArtistId = (SELECT ArtistId FROM albums GROUP BY ArtistId ORDER BY COUNT(*) DESC LIMIT 1)"},
+
+  {"id": 28, "difficulty": "hard", "question": "List the distinct billing zip codes used on invoices for customers located in Germany.",
+   "gold_sql": "SELECT DISTINCT i.BillingPostalCode FROM invoices i JOIN customers c ON c.CustomerId = i.CustomerId WHERE c.Country = 'Germany'"}
+]
