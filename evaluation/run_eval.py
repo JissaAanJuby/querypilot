@@ -12,7 +12,9 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+
 ROOT = Path(__file__).resolve().parents[1]
+SPIDER_DB_DIR = ROOT / "data" / "spider" / "database"
 sys.path.insert(0, str(ROOT))
 
 from dotenv import load_dotenv  # noqa: E402
@@ -21,6 +23,7 @@ from agent.corrector import run_agent  # noqa: E402
 from agent.executor import execute_query  # noqa: E402
 from agent.generator import GeminiClient  # noqa: E402
 from agent.schema import extract_schema  # noqa: E402
+from agent.schema import extract_schema as _extract_schema_for_spider  # same function, aliased for clarity
 
 DB_PATH = ROOT / "data" / "chinook.db"
 QUESTIONS_PATH = Path(__file__).parent / "questions.json"
@@ -63,6 +66,25 @@ def results_match(gold_df, pred_df) -> bool:
         return False
     return _canonical(gold_df) == _canonical(pred_df)
 
+
+def spider_db_path(db_id: str) -> Path:
+    return SPIDER_DB_DIR / db_id / f"{db_id}.sqlite"
+
+
+def load_spider_questions(path: Path, limit: int | None = None) -> list:
+    rows = json.loads(path.read_text(encoding="utf-8"))
+    out = []
+
+    for i, r in enumerate(rows, 1):
+        out.append({
+            "id": i,
+            "difficulty": "spider",
+            "question": r["question"],
+            "gold_sql": r["query"],
+            "db_id": r["db_id"],
+        })
+
+    return out[:limit] if limit else out
 
 # ------------------------------------------------------------- evaluation --
 def evaluate_config(name, cfg, questions, client, schema, args):
@@ -193,6 +215,161 @@ def write_report(all_records, summaries, path, model):
             lines.append("None in this run.")
     path.write_text("\n".join(lines), encoding="utf-8")
 
+def evaluate_config_spider(name, cfg, questions, client, args):
+    records = []
+    schema_cache = {}
+
+    for i, q in enumerate(questions, 1):
+        db_path = spider_db_path(q["db_id"])
+
+        if not db_path.exists():
+            print(
+                f"  [{name}] Q{q['id']:>3} "
+                f"SKIP missing db file: {db_path}"
+            )
+            continue
+
+        if q["db_id"] not in schema_cache:
+            schema_cache[q["db_id"]] = extract_schema(db_path)
+
+        schema = schema_cache[q["db_id"]]
+
+        gold = execute_query(q["gold_sql"], db_path)
+
+        if not gold.ok:
+            print(
+                f"  [{name}] Q{q['id']:>3} "
+                f"SKIP broken gold SQL: {gold.error}"
+            )
+            continue
+
+        res = run_agent(
+            q["question"],
+            client,
+            str(db_path),
+            schema,
+            max_retries=args.max_retries,
+            max_rows=args.max_rows,
+            **cfg,
+        )
+
+        if not res.attempts and res.error.startswith("LLM error"):
+            raise SystemExit(
+                f"Stopped at Q{q['id']} ({q['db_id']}): "
+                f"{res.error}\n"
+                "No results saved. Fix the API issue, then rerun."
+            )
+
+        correct = (
+            res.df is not None
+            and results_match(gold.df, res.df)
+        )
+
+        first = res.attempts[0] if res.attempts else None
+
+        first_correct = False
+
+        if first and first.executed_sql and first.status in ("ok", "empty"):
+            fr = execute_query(first.executed_sql, db_path)
+            first_correct = (
+                fr.ok
+                and results_match(gold.df, fr.df)
+            )
+
+        rec = {
+            "config": name,
+            "id": q["id"],
+            "db_id": q["db_id"],
+            "difficulty": q["difficulty"],
+            "question": q["question"],
+            "gold_sql": q["gold_sql"],
+            "first_sql": first.sql if first else "",
+            "first_status": first.status if first else "llm_error",
+            "first_error": first.error if first else res.error,
+            "final_sql": res.final_sql,
+            "final_error": res.error,
+            "attempts": len(res.attempts),
+            "initial_failure": res.initial_failure,
+            "answered": res.answered,
+            "correct": bool(correct),
+            "first_attempt_correct": bool(first_correct),
+            "latency_s": round(res.total_latency_s, 3),
+            "attempt_log": [
+                {
+                    "n": a.number,
+                    "sql": a.sql,
+                    "status": a.status,
+                    "error": a.error,
+                }
+                for a in res.attempts
+            ],
+        }
+
+        records.append(rec)
+
+        mark = "OK " if correct else "BAD"
+
+        print(
+            f"  [{name}] Q{q['id']:>3} "
+            f"{mark} {q['db_id']:<24} "
+            f"attempts={rec['attempts']} "
+            f"{rec['latency_s']:.1f}s"
+        )
+
+        if i < len(questions):
+            time.sleep(args.delay)
+
+    return records
+
+
+def categorize_error(status: str, error: str) -> str:
+    e = (error or "").lower()
+
+    if status == "validation_failed":
+        return "blocked_by_validator"
+
+    if "no such column" in e or "ambiguous column" in e:
+        return "wrong_column"
+
+    if "no such table" in e:
+        return "wrong_table"
+
+    if "no such function" in e:
+        return "wrong_function"
+
+    if "syntax error" in e:
+        return "syntax_error"
+
+    if status == "empty":
+        return "empty_result"
+
+    if "time limit" in e:
+        return "timeout"
+
+    if status == "execution_failed":
+        return "other_execution_error"
+
+    return "unknown"
+
+
+def error_breakdown(records):
+    from collections import Counter
+
+    counts = Counter()
+
+    for r in records:
+        if not r["correct"]:
+            cat = categorize_error(
+                r["first_status"],
+                r["first_error"]
+            )
+            counts[cat] += 1
+
+    return dict(counts)
+
+
+
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -207,9 +384,127 @@ def main():
     default=None,
     help="path to a questions JSON file; defaults to questions.json"
     )
+    parser.add_argument(
+        "--spider",
+        action="store_true",
+        help="run Spider mode instead of the default question set"
+    )
+
+    parser.add_argument(
+        "--spider-questions",
+        default=str(
+            Path(__file__).parent / "questions_spider.json"
+        )
+    )
     args = parser.parse_args()
 
     load_dotenv()
+
+    if args.spider:
+        client = GeminiClient()
+
+        questions = load_spider_questions(
+            Path(args.spider_questions),
+            args.limit
+        )
+
+        names = [
+            c.strip()
+            for c in args.configs.split(",")
+        ]
+
+        all_records = []
+        summaries = {}
+
+        for name in names:
+            print(f"\n=== Spider: {LABELS[name]} ===")
+
+            recs = evaluate_config_spider(
+                name,
+                CONFIGS[name],
+                questions,
+                client,
+                args
+            )
+
+            all_records += recs
+            summaries[name] = summarize(recs)
+
+        RESULTS_DIR.mkdir(exist_ok=True)
+
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        (RESULTS_DIR / f"spider_results_{stamp}.json").write_text(
+            json.dumps(
+                {
+                    "model": client.model,
+                    "summaries": summaries,
+                    "records": all_records,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        print("\n## Spider ablation\n")
+
+        print(
+            "| Configuration | Execution Accuracy | "
+            "Avg Latency | Failed Queries |"
+        )
+        print("|---|---|---|---|")
+
+        for name, s in summaries.items():
+            print(
+                f"| {LABELS[name]} | "
+                f"{s['accuracy']:.1f}% "
+                f"({s['correct']}/{s['total']}) | "
+                f"{s['avg_latency']:.2f} s | "
+                f"{s['failed_queries']} |"
+            )
+
+        if "self_correction" in summaries:
+            recs = [
+                r for r in all_records
+                if r["config"] == "self_correction"
+            ]
+
+            print(
+                "\n## Error category breakdown "
+                "(self-correction, first attempt)\n"
+            )
+
+            for cat, count in sorted(
+                error_breakdown(recs).items(),
+                key=lambda x: -x[1]
+            ):
+                print(f"  {cat:<24} {count}")
+
+            fixed_by_cat = {}
+
+            for r in recs:
+                if r["initial_failure"]:
+                    cat = categorize_error(
+                        r["first_status"],
+                        r["first_error"]
+                    )
+
+                    fixed_by_cat.setdefault(cat, [0, 0])
+                    fixed_by_cat[cat][1] += 1
+
+                    if r["answered"]:
+                        fixed_by_cat[cat][0] += 1
+
+            print("\n## Correction success rate by error category\n")
+
+            for cat, (fixed, total) in fixed_by_cat.items():
+                print(
+                    f"  {cat:<24} "
+                    f"{fixed}/{total} corrected"
+                )
+
+        print(f"\nSaved to {RESULTS_DIR}")
+        return
     q_path = Path(args.questions) if args.questions else QUESTIONS_PATH
     questions = json.loads(q_path.read_text(encoding="utf-8"))
     if args.limit:

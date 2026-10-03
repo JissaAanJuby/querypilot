@@ -6,3 +6,36 @@ __pycache__/
 evaluation/results/*
 !evaluation/results/.gitkeep
 data/chinook.zip
+
+# Spider databases are large; keep them locally
+data/spider/database/*/
+
+# Keep selected Spider benchmark databases in Git
+!data/spider/database/flight_2/
+!data/spider/database/flight_2/**
+
+!data/spider/database/concert_singer/
+!data/spider/database/concert_singer/**
+
+!data/spider/database/museum_visit/
+!data/spider/database/museum_visit/**
+
+!data/spider/database/network_1/
+!data/spider/database/network_1/**
+
+!data/spider/database/car_1/
+!data/spider/database/car_1/**
+
+!data/spider/database/tvshow/
+!data/spider/database/tvshow/**
+
+!data/spider/database/pets_1/
+!data/spider/database/pets_1/**
+
+!data/spider/database/student_transcripts_tracking/
+!data/spider/database/student_transcripts_tracking/**
+
+!data/spider/database/dog_kennels/
+!data/spider/database/dog_kennels/**
+
+# wta_1 is ~100 MB, so keep it local
