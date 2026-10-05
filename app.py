@@ -1,44 +1,36 @@
 """QueryPilot — Self-Correcting Text-to-SQL Analyst."""
 
 import glob
-
 import json
-
 import os
-
 from pathlib import Path
 
 import pandas as pd
-
 import streamlit as st
-
 from dotenv import load_dotenv
 
 from agent.corrector import run_agent
-
 from agent.generator import get_client, LLMError
-
 from agent.schema import extract_schema
-
 from ui import theme
-
 from ui.attempt_panel import render as render_attempts
-
 from ui.charts import choose_chart, explain
-
 from ui.pipeline_view import render as render_pipeline
+
 
 load_dotenv()
 
-CHINOOK_PATH = "data/chinook.db"
 
+CHINOOK_PATH = "data/chinook.db"
 SPIDER_DB_DIR = Path("data/spider/database")
+
 
 st.set_page_config(
     page_title="QueryPilot",
     page_icon="🧭",
     layout="wide"
 )
+
 
 theme.inject()
 
@@ -57,6 +49,7 @@ def _client(provider: str, model: str):
 def list_spider_dbs() -> list:
     if not SPIDER_DB_DIR.exists():
         return []
+
     return sorted(
         p.name
         for p in SPIDER_DB_DIR.iterdir()
@@ -67,14 +60,36 @@ def list_spider_dbs() -> list:
 
 def latest_json(pattern: str):
     files = sorted(glob.glob(pattern))
+
     if not files:
         return None
+
     return json.loads(
         Path(files[-1]).read_text(encoding="utf-8")
     )
 
 
+def latest_spider_for_provider(provider: str):
+    """Load the latest Spider result for a specific provider."""
+    pattern = f"evaluation/results/spider_results_{provider}_*.json"
+    files = sorted(glob.glob(pattern))
+
+    if files:
+        return json.loads(Path(files[-1]).read_text(encoding="utf-8")), files[-1]
+
+    legacy = sorted(
+        f for f in glob.glob("evaluation/results/spider_results_*.json")
+        if not any(p in f for p in ("_gemini_", "_groq_", "_openai_"))
+    )
+
+    if legacy:
+        return json.loads(Path(legacy[-1]).read_text(encoding="utf-8")), legacy[-1]
+
+    return None, None
+
+
 # ------------------------------------------------------------------ header
+
 st.markdown(
     '<p class="qp-title">🧭 QueryPilot</p>',
     unsafe_allow_html=True
@@ -85,11 +100,14 @@ st.markdown(
     unsafe_allow_html=True
 )
 
+
 tab_analyst, tab_eval, tab_audit, tab_schema = st.tabs(
     ["Analyst", "Evaluation Dashboard", "Audit View", "Schema Explorer"]
 )
 
+
 # ================================================================== ANALYST
+
 with tab_analyst:
 
     with st.sidebar:
@@ -116,28 +134,47 @@ with tab_analyst:
                 )
                 st.stop()
 
-            db_id = st.selectbox("Spider database", dbs)
+            db_id = st.selectbox(
+                "Spider database",
+                dbs
+            )
 
             db_path = str(
                 SPIDER_DB_DIR / db_id / f"{db_id}.sqlite"
             )
 
+        # ----------------------------------------------------------
+        # LLM PROVIDER
+        # ----------------------------------------------------------
+
+        providers = ["gemini", "groq", "openai"]
+
+        configured_provider = os.getenv(
+            "LLM_PROVIDER",
+            "gemini"
+        ).lower()
+
+        if configured_provider not in providers:
+            configured_provider = "gemini"
+
         provider = st.selectbox(
             "LLM Provider",
-            ["gemini", "openai"],
-            index=["gemini", "openai"].index(
-                os.getenv("LLM_PROVIDER", "gemini").lower()
-                if os.getenv("LLM_PROVIDER", "gemini").lower()
-                in ["gemini", "openai"]
-                else "gemini"
-            )
+            providers,
+            index=providers.index(configured_provider)
         )
 
         if provider == "gemini":
             model = os.getenv(
                 "GEMINI_MODEL",
-                "gemini-2.5-flash"
+                "gemini-3.5-flash-lite"
             )
+
+        elif provider == "groq":
+            model = os.getenv(
+                "GROQ_MODEL",
+                "llama-3.3-70b-versatile"
+            )
+
         else:
             model = os.getenv(
                 "OPENAI_MODEL",
@@ -145,7 +182,6 @@ with tab_analyst:
             )
 
         st.caption(f"Provider: `{provider}`")
-
         st.caption(f"Model: `{model}`")
 
         max_retries = st.slider(
@@ -216,7 +252,6 @@ with tab_analyst:
             )
 
         st.session_state["last_result"] = result
-
         st.session_state["last_prune"] = prune
 
     result = st.session_state.get("last_result")
@@ -270,7 +305,10 @@ with tab_analyst:
                 )
             )
 
-            c1.metric("Status", status)
+            c1.metric(
+                "Status",
+                status
+            )
 
             c2.metric(
                 "Attempts",
@@ -291,7 +329,9 @@ with tab_analyst:
                 st.error(result.error)
 
             if result.empty:
-                st.warning("Query ran but returned no rows.")
+                st.warning(
+                    "Query ran but returned no rows."
+                )
 
             if result.truncated:
                 st.warning(
@@ -335,6 +375,7 @@ with tab_analyst:
 
 
 # =========================================================== EVALUATION TAB
+
 with tab_eval:
 
     st.markdown("### Evaluation Dashboard")
@@ -343,9 +384,26 @@ with tab_eval:
         "evaluation/results/results_*.json"
     )
 
-    spider = latest_json(
-        "evaluation/results/spider_results_*.json"
-    )
+    available_providers = sorted({
+        Path(f).stem.split("_")[2]
+        for f in glob.glob("evaluation/results/spider_results_*.json")
+        if Path(f).stem.split("_")[2] in ("gemini", "groq", "openai")
+    })
+
+    if not available_providers:
+        spider, spider_file = None, None
+        eval_provider = None
+    else:
+        eval_provider = st.selectbox(
+            "Spider results — provider",
+            available_providers,
+            index=available_providers.index("gemini")
+            if "gemini" in available_providers else 0,
+        )
+
+        spider, spider_file = latest_spider_for_provider(eval_provider)
+
+        st.caption(f"Loaded: `{spider_file}`")
 
     if chinook is None and spider is None:
 
@@ -388,7 +446,7 @@ with tab_eval:
 
         if spider:
 
-            st.markdown("#### Spider (10 unseen schemas)")
+            st.markdown(f"#### Spider ({eval_provider}, 10 unseen schemas)")
 
             rows = []
 
@@ -432,15 +490,21 @@ with tab_eval:
                 use_container_width=True
             )
 
+            base_acc = spider["summaries"]["baseline"]["accuracy"]
+            corr_acc = spider["summaries"]["self_correction"]["accuracy"]
+            delta = corr_acc - base_acc
+            direction = "improved" if delta > 0 else ("stayed flat" if delta == 0 else "declined")
+
             st.info(
-                "Self-correction's raw score here is lower than baseline's — this was "
-                "audited by hand. See the **Audit View** tab: most 'failures' were "
-                "benchmark gold-SQL defects the agent correctly worked around, with "
-                "exactly one confirmed model error."
+                f"Self-correction {direction} accuracy by {delta:+.1f} points for {eval_provider} "
+                f"on this run ({base_acc:.1f}% → {corr_acc:.1f}%). Raw accuracy alone doesn't "
+                "distinguish model errors from benchmark/gold-data defects or ambiguous questions — "
+                "see the **Audit View** tab for the per-question classification."
             )
 
 
 # =============================================================== AUDIT TAB
+
 with tab_audit:
 
     st.markdown("### Audit View")
@@ -538,6 +602,7 @@ with tab_audit:
 
 
 # ============================================================== SCHEMA TAB
+
 with tab_schema:
 
     st.markdown("### Schema Explorer")

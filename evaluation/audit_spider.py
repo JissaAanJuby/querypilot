@@ -1,21 +1,29 @@
 """Audit Spider evaluation failures without modifying gold SQL."""
 
 import json
+
 import re
+
+import sys
+
 from pathlib import Path
 
 from agent.executor import execute_query
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
 RESULTS_DIR = ROOT / "evaluation" / "results"
+
 SPIDER_DB_DIR = ROOT / "data" / "spider" / "database"
 
 
 def latest_spider_results():
+
     files = sorted(RESULTS_DIR.glob("spider_results_*.json"))
 
     if not files:
+
         raise SystemExit(
             "No spider_results_*.json found. Run the Spider evaluation first."
         )
@@ -24,19 +32,21 @@ def latest_spider_results():
 
 
 def db_path(db_id):
+
     return SPIDER_DB_DIR / db_id / f"{db_id}.sqlite"
 
 
 def normalize_quotes(sql):
+
     return re.sub(r'"([^"]*)"', r"'\1'", sql)
 
 
 def check_gold_trim_sensitive(gold_sql: str, db: Path) -> dict:
     """Does wrapping string equality comparisons in TRIM() change the result?
-
     Checks equality comparisons anywhere in the SQL, including WHERE and JOIN
     conditions. This helps detect whitespace-padded values in benchmark data.
     """
+
     base = execute_query(gold_sql, db)
 
     trimmed_sql = re.sub(
@@ -67,7 +77,9 @@ def check_gold_trim_sensitive(gold_sql: str, db: Path) -> dict:
         ),
     }
 
+
 def check_gold_case_sensitive(gold_sql, db):
+
     base = execute_query(gold_sql, db)
 
     ci_sql = re.sub(
@@ -88,9 +100,11 @@ def check_gold_case_sensitive(gold_sql, db):
 
 
 def check_gold_has_duplicates(gold_sql, db):
+
     result = execute_query(gold_sql, db)
 
     if not result.ok or result.df is None or result.df.empty:
+
         return {
             "has_duplicate_rows": False,
             "duplicate_count": 0,
@@ -105,7 +119,9 @@ def check_gold_has_duplicates(gold_sql, db):
 
 
 def classify(record):
+
     db = db_path(record["db_id"])
+
     gold_sql = normalize_quotes(record["gold_sql"])
 
     gold_result = execute_query(gold_sql, db)
@@ -120,6 +136,7 @@ def classify(record):
     }
 
     if not gold_result.ok:
+
         return {
             **findings,
             "classification": "benchmark_defect",
@@ -137,6 +154,7 @@ def classify(record):
     findings.update(trim_check)
 
     if trim_check["trim_changes_result"]:
+
         return {
             **findings,
             "classification": "possible_data_format_issue",
@@ -154,6 +172,7 @@ def classify(record):
     findings.update(case_check)
 
     if case_check["case_insensitive_changes_result"]:
+
         return {
             **findings,
             "classification": "possible_case_issue",
@@ -171,6 +190,7 @@ def classify(record):
     findings.update(duplicate_check)
 
     if duplicate_check["has_duplicate_rows"]:
+
         return {
             **findings,
             "classification": "possible_duplicate_issue",
@@ -182,6 +202,7 @@ def classify(record):
         }
 
     if gold_result.row_count == 0:
+
         return {
             **findings,
             "classification": "legitimate_empty",
@@ -201,7 +222,20 @@ def classify(record):
 
 
 def main():
-    result_file = latest_spider_results()
+
+    if len(sys.argv) > 1:
+
+        result_file = Path(sys.argv[1])
+
+        if not result_file.exists():
+
+            raise SystemExit(
+                f"File not found: {result_file}"
+            )
+
+    else:
+
+        result_file = latest_spider_results()
 
     data = json.loads(
         result_file.read_text(encoding="utf-8")
@@ -222,6 +256,7 @@ def main():
     report = []
 
     for record in records:
+
         audit = classify(record)
 
         report.append(
@@ -246,10 +281,13 @@ def main():
     counts = {}
 
     for record in report:
+
         category = record["audit"]["classification"]
+
         counts[category] = counts.get(category, 0) + 1
 
     print("Summary:")
+
     print(counts)
 
     timestamp = result_file.stem.replace(
@@ -271,8 +309,10 @@ def main():
     )
 
     print()
+
     print(f"Saved to {output_file}")
 
 
 if __name__ == "__main__":
+
     main()
