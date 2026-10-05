@@ -4,10 +4,10 @@ Ask a database a question in plain English. QueryPilot generates SQL,
 validates it with a real parser, runs it read-only, and — if it fails or
 returns nothing — diagnoses the error and retries automatically.
 
-**[Live demo](https://querypilot-1.streamlit.app/)** 
+**[Live demo](https://querypilot-1.streamlit.app/)**
 
-![QueryPilot demo](https://github.com/JissaAanJuby/querypilot/blob/main/querypilot1.gif) 
-![QueryPilot demo](https://github.com/JissaAanJuby/querypilot/blob/main/querypilot2.gif) 
+![QueryPilot demo](https://raw.githubusercontent.com/JissaAanJuby/querypilot/main/querypilot1.gif)
+![QueryPilot demo](https://raw.githubusercontent.com/JissaAanJuby/querypilot/main/querypilot2.gif)
 
 ## Overview
 
@@ -49,8 +49,9 @@ Results → Plotly chart → plain-English summary
 ```
 
 ## Tech Stack
-Python, Gemini API / Groq API / OpenAI API (provider-agnostic), SQLite,
-sqlglot, pandas, Streamlit, Plotly, pytest, Docker
+Python, Gemini API / Groq API / OpenAI API (provider-agnostic, three
+backends — two benchmarked, see below), SQLite, sqlglot, pandas,
+Streamlit, Plotly, pytest, Docker
 
 ## Providers
 
@@ -64,6 +65,11 @@ only touches `agent/generator.py`, nothing else in the pipeline:
 | OpenAI (`gpt-4o-mini`) | Implemented, not benchmarked (API cost on a free account) |
 
 ## Evaluation
+
+Accuracy below is **execution accuracy**: the predicted result set
+matches the gold result set (row order, column order, and small float
+differences ignored) — not exact SQL text matching, since different SQL
+can produce an equally correct answer.
 
 ### Chinook (single, seen schema)
 | Benchmark | Baseline | Self-Correction |
@@ -79,24 +85,28 @@ within 1 retry).
 ### Spider (40 questions, 10 unseen schemas)
 | Provider | Baseline | Self-Correction | Avg Latency (base → corr) |
 |---|---|---|---|
-| Gemini | 87.5% (35/40) | 85.0% (34/40) | 5.04s → 7.89s |
-| Groq | 80.0% (32/40) | 80.0% (32/40) | 1.50s → 1.62s |
+| Gemini | 87.5% (35/40) | **85.0% (34/40)** | 5.04s → 7.89s |
+| Groq | 80.0% (32/40) | **80.0% (32/40)** | 1.50s → 1.62s |
 
 **Neither provider showed a net accuracy gain from self-correction on this
-run.** That's reported honestly rather than reframed as a win.
+run — the self-correction numbers (bolded above) are the ones that
+reflect the full pipeline this project is named for.** That's reported
+honestly rather than reframed as a win.
 
 ### Why: a per-question audit, not just an aggregate score
 
 Averaging hides what actually happened. A full transition analysis
 (which specific questions flipped between baseline and self-correction,
 not just the net percentage) plus manual inspection of every "failure"
-against the live database found:
+against the live database found four distinct causes, not one dominant
+one:
 
-- **4 benchmark/gold-SQL defects**, confirmed by direct query, affecting
-  both providers independently (so clearly not provider-specific):
-  - `flight_2`: gold SQL returns 0 rows on this database copy due to
-    trailing whitespace in the data (verified: `length(City)=9` vs
-    `length(trim(City))=8`).
+- **4 confirmed benchmark/gold-SQL defects**, by direct query, affecting
+  both providers independently (so clearly not provider-specific) — 2 in
+  `flight_2`, 1 each in `student_transcripts_tracking` and `pets_1`:
+  - `flight_2` (2 questions): gold SQL returns 0 rows on this database
+    copy due to trailing whitespace in the data (verified:
+    `length(City)=9` vs `length(trim(City))=8`).
   - `student_transcripts_tracking`: gold filters `'haiti'` (lowercase);
     the stored value is `'Haiti'`.
   - `pets_1`: gold SQL itself returns a duplicate row — a malformed
@@ -217,11 +227,15 @@ tree's root node cannot be talked around by phrasing.
 **Why self-correction, and what the eval actually showed:** on an easy,
 single-schema benchmark it never triggered — the model was too strong.
 On a harder 40-question, 10-schema Spider subset across two providers,
-it triggered, and the net effect was roughly neutral, not a clean win.
-Rather than report the raw percentage, I audited every failure by hand
-— re-running gold SQL directly against the database — and found most
-"failures" were defects in the benchmark's own reference queries, not
-my agent. Each provider had exactly one real, persistent error.
+it triggered, and the net effect was roughly neutral, not a clean win
+(Gemini: 87.5% baseline → 85.0% with self-correction; Groq: 80.0% on
+both). Rather than report the raw percentage, I audited every failure by
+hand — re-running gold SQL directly against the database — and
+separated benchmark reference-SQL defects and ambiguous questions from
+genuine model errors. Each provider had exactly one persistent model
+error, and the correction loop itself showed variance in both
+directions: it recovered one question for Groq while costing Gemini one
+it had answered correctly at baseline.
 
 **What I learned:** an aggregate accuracy number is only as trustworthy
 as the process used to produce it — I caught two measurement bugs during
