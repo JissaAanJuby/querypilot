@@ -6,7 +6,8 @@ returns nothing — diagnoses the error and retries automatically.
 
 **[Live demo](https://querypilot-1.streamlit.app/)** 
 
-![QueryPilot demo](docs/demo.gif) *(add a screenshot/GIF before final submission)*
+![QueryPilot demo]() 
+![QueryPilot demo](docs/demo.gif) 
 
 ## Overview
 
