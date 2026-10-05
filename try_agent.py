@@ -39,13 +39,13 @@ def main():
     load_dotenv()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-    from agent.generator import GeminiClient, generate_sql
+    from agent.generator import generate_sql, get_client
     from agent.schema import extract_schema, format_schema, select_relevant_tables
 
     schema = extract_schema(DB_PATH)
     tables = select_relevant_tables(args.question, schema) if args.prune else None
     schema_text = format_schema(schema, tables)
-    real = GeminiClient()
+    real = get_client()
     print(f"Model: {real.model}")
     print(f"Tables sent to model ({len(tables or schema)}): {tables or 'all'}\n")
 

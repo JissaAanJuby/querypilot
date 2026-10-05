@@ -31,13 +31,28 @@ def normalize_quotes(sql):
     return re.sub(r'"([^"]*)"', r"'\1'", sql)
 
 
-def check_gold_trim_sensitive(gold_sql, db):
+def check_gold_trim_sensitive(gold_sql: str, db: Path) -> dict:
+    """Does wrapping string equality comparisons in TRIM() change the result?
+
+    Checks equality comparisons anywhere in the SQL, including WHERE and JOIN
+    conditions. This helps detect whitespace-padded values in benchmark data.
+    """
     base = execute_query(gold_sql, db)
 
     trimmed_sql = re.sub(
         r"(\b\w+(?:\.\w+)?)\s*=\s*'([^']*)'",
         r"TRIM(\1) = TRIM('\2')",
         gold_sql,
+        flags=re.IGNORECASE,
+    )
+
+    # Also handle column-to-column equality comparisons, commonly found
+    # in JOIN conditions.
+    trimmed_sql = re.sub(
+        r"(\b\w+(?:\.\w+)?)\s*=\s*(\b\w+(?:\.\w+)?)",
+        r"TRIM(\1) = TRIM(\2)",
+        trimmed_sql,
+        flags=re.IGNORECASE,
     )
 
     trimmed = execute_query(trimmed_sql, db)
@@ -51,7 +66,6 @@ def check_gold_trim_sensitive(gold_sql, db):
             and base.row_count != trimmed.row_count
         ),
     }
-
 
 def check_gold_case_sensitive(gold_sql, db):
     base = execute_query(gold_sql, db)

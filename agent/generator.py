@@ -42,7 +42,7 @@ class GeminiClient(LLMClient):
         config = types.GenerateContentConfig(
             system_instruction=system,
             temperature=0.0,
-            response_mime_type="application/json",  # structured output
+            response_mime_type="application/json",
             response_schema=SQLResponse,
         )
         last_error = None
@@ -83,7 +83,164 @@ class GeminiClient(LLMClient):
         raise LLMError(str(last_error))
 
 
+class OpenAIClient(LLMClient):
+    def __init__(self, api_key: str | None = None, model: str | None = None):
+        load_dotenv()
+        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+        self.model = model or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+        if not self.api_key or self.api_key == "your_key_here":
+            raise LLMError("OPENAI_API_KEY is missing. Add it to your .env file.")
+
+        from openai import OpenAI
+
+        self._client = OpenAI(api_key=self.api_key)
+
+    def complete(self, system: str, prompt: str) -> str:
+        last_error = None
+
+        for attempt in range(4):
+            try:
+                response = self._client.chat.completions.create(
+                    model=self.model,
+                    temperature=0.0,
+                    response_format={"type": "json_object"},
+                    messages=[
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": prompt},
+                    ],
+                )
+
+                text = response.choices[0].message.content
+
+                if not text:
+                    raise LLMError("Model returned an empty response")
+
+                return text
+
+            except Exception as e:
+                last_error = e
+                msg = str(e)
+
+                if "insufficient_quota" in msg:
+                    raise LLMError(f"OpenAI quota exhausted: {msg}")
+
+                if "rate_limit" in msg.lower():
+                    if attempt < 3:
+                        time.sleep(10 * (attempt + 1))
+                        continue
+
+                break
+
+        raise LLMError(str(last_error))
+
+class GroqClient(LLMClient):
+    def __init__(self, api_key: str | None = None, model: str | None = None):
+        load_dotenv()
+        self.api_key = api_key or os.getenv("GROQ_API_KEY")
+        self.model = model or os.getenv(
+            "GROQ_MODEL",
+            "llama-3.3-70b-versatile",
+        )
+
+        if not self.api_key or self.api_key == "your_key_here":
+            raise LLMError(
+                "GROQ_API_KEY is missing. Add it to your .env file."
+            )
+
+        from openai import OpenAI
+
+        self._client = OpenAI(
+            api_key=self.api_key,
+            base_url="https://api.groq.com/openai/v1",
+        )
+
+    def complete(self, system: str, prompt: str) -> str:
+        last_error = None
+
+        for attempt in range(4):
+            try:
+                response = self._client.chat.completions.create(
+                    model=self.model,
+                    temperature=0.0,
+                    response_format={"type": "json_object"},
+                    messages=[
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": prompt},
+                    ],
+                )
+
+                text = response.choices[0].message.content
+
+                if not text:
+                    raise LLMError("Model returned an empty response")
+
+                return text
+
+            except Exception as e:
+                last_error = e
+                msg = str(e)
+
+                if "rate_limit" in msg.lower() or "429" in msg:
+                    if attempt < 3:
+                        time.sleep(8 * (attempt + 1))
+                        continue
+
+                break
+
+        raise LLMError(str(last_error))
+
+def get_client(provider: str | None = None) -> LLMClient:
+    """Build the configured LLM provider.
+
+    Provider defaults to LLM_PROVIDER in .env.
+    Supported providers: gemini, openai.
+    """
+    load_dotenv()
+
+    provider = (
+        provider or os.getenv("LLM_PROVIDER", "gemini")
+    ).lower()
+
+    if provider == "gemini":
+        return GeminiClient()
+
+    if provider == "openai":
+        return OpenAIClient()
+
+    raise LLMError(
+        f"Unknown LLM_PROVIDER: {provider!r}. "
+        "Use 'gemini' or 'openai'."
+    )
+
+def get_client(provider: str | None = None) -> LLMClient:
+    """Build the configured LLM provider.
+
+    Provider defaults to LLM_PROVIDER in .env.
+    Supported providers: gemini, openai, groq.
+    """
+    load_dotenv()
+
+    provider = (
+        provider or os.getenv("LLM_PROVIDER", "gemini")
+    ).lower()
+
+    if provider == "gemini":
+        return GeminiClient()
+
+    if provider == "openai":
+        return OpenAIClient()
+
+    if provider == "groq":
+        return GroqClient()
+
+    raise LLMError(
+        f"Unknown LLM_PROVIDER: {provider!r}. "
+        "Use 'gemini', 'openai', or 'groq'."
+    )
+
 # --------------------------------------------------------------- prompts --
+
 SYSTEM_PROMPT = """You are an expert SQLite analyst. Convert the user's question into ONE read-only SQLite query.
 
 Rules:
@@ -117,7 +274,14 @@ def build_correction_prompt(question: str, schema_text: str, history: list) -> s
         "Previous attempts (oldest first) and why each was rejected:",
     ]
     for i, item in enumerate(history, 1):
-        parts += [f"Attempt {i} SQL:", item["sql"], f"Attempt {i} problem: {item['error']}", ""]
+        parts += [
+            f"Attempt {i} SQL:",
+            item["sql"],
+            f"Attempt {i} problem:",
+            item["error"],
+            "",
+        ]
+
     parts += [
         "Write a corrected query that fixes the problem.",
         "- If a column or table was not found, re-read the schema and use the exact names.",
@@ -125,36 +289,66 @@ def build_correction_prompt(question: str, schema_text: str, history: list) -> s
         "- Do not repeat a previous attempt.",
         'Return JSON: {"sql": "..."} containing the corrected SQL only.',
     ]
+
     return "\n".join(parts)
 
 
 # ------------------------------------------------------------ extraction --
+
 def clean_sql(text: str) -> str:
     """Strip markdown fences and trailing semicolons."""
     text = (text or "").strip()
-    match = re.search(r"```(?:sql|sqlite)?\s*(.*?)```", text, re.DOTALL | re.IGNORECASE)
+    match = re.search(
+        r"```(?:sql|sqlite)?\s*(.*?)```",
+        text,
+        re.DOTALL | re.IGNORECASE,
+    )
     if match:
         text = match.group(1)
+
     return text.strip().rstrip(";").strip()
 
 
 def extract_sql(raw: str) -> str:
     """Accept JSON {"sql": ...}, fenced SQL, or raw SQL."""
     text = (raw or "").strip()
+
     try:
         data = json.loads(text)
         if isinstance(data, dict) and "sql" in data:
             text = str(data["sql"])
     except (json.JSONDecodeError, TypeError):
         pass
+
     return clean_sql(text)
 
 
-def generate_sql(client: LLMClient, question: str, schema_text: str) -> str:
-    return extract_sql(client.complete(SYSTEM_PROMPT, build_generation_prompt(question, schema_text)))
-
-
-def correct_sql(client: LLMClient, question: str, schema_text: str, history: list) -> str:
+def generate_sql(
+    client: LLMClient,
+    question: str,
+    schema_text: str,
+) -> str:
     return extract_sql(
-        client.complete(SYSTEM_PROMPT, build_correction_prompt(question, schema_text, history))
+        client.complete(
+            SYSTEM_PROMPT,
+            build_generation_prompt(question, schema_text),
+        )
+    )
+
+
+def correct_sql(
+    client: LLMClient,
+    question: str,
+    schema_text: str,
+    history: list,
+) -> str:
+    return extract_sql(
+        client.complete(
+            SYSTEM_PROMPT,
+            build_correction_prompt(
+                question,
+                schema_text,
+                history,
+            ),
+        )
     )
