@@ -264,5 +264,9 @@ benchmark the OpenAI provider, and run a larger Spider subset.
 - Benchmark the OpenAI provider
 - Few-shot retrieval of past successful/corrected queries (FAISS)
 - Broader result-plausibility checks beyond join fan-out
+
+
+## License
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 - Larger Spider subset or full dev-set evaluation
 - PostgreSQL support
