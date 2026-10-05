@@ -7,7 +7,7 @@ returns nothing — diagnoses the error and retries automatically.
 **[Live demo](https://querypilot-1.streamlit.app/)** 
 
 ![QueryPilot demo](https://github.com/JissaAanJuby/querypilot/blob/main/querypilot1.gif) 
-![QueryPilot demo](docs/demo.gif) 
+![QueryPilot demo](https://github.com/JissaAanJuby/querypilot/blob/main/querypilot2.gif) 
 
 ## Overview
 
